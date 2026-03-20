@@ -35,6 +35,12 @@ export const {
 		permissionGranted: (): boolean => hasPermission('view-moderation-console'),
 	},
 	{
+    	href: '/admin/scheduled-jobs' as any,
+    	i18nLabel: 'Scheduled Jobs',
+    	icon: 'clock',
+    	permissionGranted: (): boolean => hasPermission('view-privileged-setting'),
+	},
+	{
 		href: '/admin/rooms',
 		i18nLabel: 'Rooms',
 		icon: 'hashtag',

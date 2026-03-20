@@ -64,6 +64,10 @@ declare module '@rocket.chat/ui-contexts' {
 			pathname: `/admin/rooms${`/${string}` | ''}${`/${string}` | ''}`;
 			pattern: '/admin/rooms/:context?/:id?';
 		};
+			'admin-scheduled-jobs': {
+			pathname: `/admin/scheduled-jobs${`/${string}` | ''}${`/${string}` | ''}`;
+			pattern: '/admin/scheduled-jobs/:context?/:id?';
+		};
 		'invites': {
 			pathname: '/admin/invites';
 			pattern: '/admin/invites';
@@ -191,7 +195,10 @@ registerAdminRoute('/rooms/:context?/:id?', {
 	name: 'admin-rooms',
 	component: lazy(() => import('./rooms/RoomsRoute')),
 });
-
+registerAdminRoute('/scheduled-jobs/:context?/:id?', {
+    name: 'admin-scheduled-jobs',
+    component: lazy(() => import('./scheduledJobs/ScheduledJobsRoute')),
+});
 registerAdminRoute('/invites', {
 	name: 'invites',
 	component: lazy(() => import('./invites/InvitesRoute')),
