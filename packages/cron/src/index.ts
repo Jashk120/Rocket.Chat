@@ -195,6 +195,20 @@ export class AgendaCronJobs {
 			await runCronJobFunctionAndPersistResult(async () => callback(), jobName);
 		});
 	}
+	public async getJobs(query = {}, sort = {}, limit = 0, skip = 0) {
+		if (!this.scheduler) {
+			return [];
+		}
+		return this.scheduler.jobs(query, sort, limit, skip);
+	}
+
+	public async countJobs(query = {}): Promise<number> {
+    	if (!this.scheduler) {
+    	    return 0;
+    	}
+    	const jobs = await this.scheduler.jobs(query);
+    	return jobs.length;
+	}
 }
 
 export const cronJobs = new AgendaCronJobs();
