@@ -114,7 +114,6 @@ API.v1.post(
         return API.v1.success();
     },
 );
-
 API.v1.post(
     'jobs/:jobId/enable',
     {
@@ -137,6 +136,34 @@ API.v1.post(
     async function action() {
         const { jobId } = this.urlParams;
         const found = await cronJobs.enableJob(jobId) as any;
+        if (!found) {
+            return API.v1.failure('Job not found');
+        }
+        return API.v1.success();
+    },
+);
+API.v1.post(
+    'jobs/:jobId/force-run',
+    {
+        authRequired: true,
+        permissionsRequired: ['view-privileged-setting'],
+        response: {
+			200: ajv.compile({
+				type: 'object',
+				properties: {
+					success: { type: 'boolean', enum: [true] },
+				},
+				required: ['success'],
+				additionalProperties: false,
+			}),
+			400: validateBadRequestErrorResponse,
+			401: validateUnauthorizedErrorResponse,
+			403: validateForbiddenErrorResponse,
+		},
+    },
+    async function action() {
+        const { jobId } = this.urlParams;
+        const found = await cronJobs.forceRunJob(jobId) as any;
         if (!found) {
             return API.v1.failure('Job not found');
         }

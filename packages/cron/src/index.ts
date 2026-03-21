@@ -226,6 +226,18 @@ export class AgendaCronJobs {
 		await job.save();
 		return true;
 	}
+	public async forceRunJob(jobId: string): Promise<boolean> {
+		if (!this.scheduler) return false;
+		const [job] = await this.scheduler.jobs({ _id: new ObjectId(jobId) });
+		if (!job) return false;
+		try {
+			await job.run();
+		} catch (e: any) {
+			if (e?.message === 'Undefined job') return false;
+			throw e;
+		}
+		return true;
+	}
 }
 
 export const cronJobs = new AgendaCronJobs();
