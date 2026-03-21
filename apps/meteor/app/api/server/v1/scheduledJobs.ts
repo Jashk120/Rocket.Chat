@@ -2,6 +2,7 @@ import { cronJobs } from '@rocket.chat/cron';
 import { ajv, validateUnauthorizedErrorResponse, validateForbiddenErrorResponse } from '@rocket.chat/rest-typings';
 
 import { API } from '../api';
+import { validateBadRequestErrorResponse } from '@rocket.chat/rest-typings/src/v1/Ajv';
 
 API.v1.get(
 	'jobs',
@@ -84,4 +85,61 @@ API.v1.get(
 
 		return API.v1.success({ jobs, count: jobs.length, offset: skip, total });
 	},
+);
+API.v1.post(
+    'jobs/:jobId/disable',
+    {
+        authRequired: true,
+        permissionsRequired: ['view-privileged-setting'],
+       response: {
+			200: ajv.compile({
+				type: 'object',
+				properties: {
+					success: { type: 'boolean', enum: [true] },
+				},
+				required: ['success'],
+				additionalProperties: false,
+			}),
+			400: validateBadRequestErrorResponse,
+			401: validateUnauthorizedErrorResponse,
+			403: validateForbiddenErrorResponse,
+		},
+    },
+    async function action() {
+        const { jobId } = this.urlParams;
+        const found = await cronJobs.disableJob(jobId);
+        if (!found) {
+            return API.v1.failure('Job not found') as any;
+        }
+        return API.v1.success();
+    },
+);
+
+API.v1.post(
+    'jobs/:jobId/enable',
+    {
+        authRequired: true,
+        permissionsRequired: ['view-privileged-setting'],
+        response: {
+			200: ajv.compile({
+				type: 'object',
+				properties: {
+					success: { type: 'boolean', enum: [true] },
+				},
+				required: ['success'],
+				additionalProperties: false,
+			}),
+			400: validateBadRequestErrorResponse,
+			401: validateUnauthorizedErrorResponse,
+			403: validateForbiddenErrorResponse,
+		},
+    },
+    async function action() {
+        const { jobId } = this.urlParams;
+        const found = await cronJobs.enableJob(jobId) as any;
+        if (!found) {
+            return API.v1.failure('Job not found');
+        }
+        return API.v1.success();
+    },
 );

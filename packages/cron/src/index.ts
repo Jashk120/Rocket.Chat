@@ -2,7 +2,7 @@ import { type Job, Agenda } from '@rocket.chat/agenda';
 import { Logger } from '@rocket.chat/logger';
 import { CronHistory } from '@rocket.chat/models';
 import { Random } from '@rocket.chat/random';
-import type { Db } from 'mongodb';
+import  { type Db ,ObjectId } from 'mongodb';
 
 const logger = new Logger('Cron');
 
@@ -208,6 +208,23 @@ export class AgendaCronJobs {
     	}
     	const jobs = await this.scheduler.jobs(query);
     	return jobs.length;
+	}
+	public async disableJob(jobId: string): Promise<boolean> {
+		if (!this.scheduler) return false;
+		const [job] = await this.scheduler.jobs({ _id: new ObjectId(jobId) });
+		if (!job) return false;
+		job.disable();
+		await job.save();
+		return true;
+	}
+
+	public async enableJob(jobId: string): Promise<boolean> {
+		if (!this.scheduler) return false;
+		const [job] = await this.scheduler.jobs({ _id: new ObjectId(jobId) });
+		if (!job) return false;
+		job.enable();
+		await job.save();
+		return true;
 	}
 }
 
