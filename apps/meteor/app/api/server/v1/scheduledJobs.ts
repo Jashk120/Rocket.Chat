@@ -3,6 +3,9 @@ import { ajv, validateUnauthorizedErrorResponse, validateForbiddenErrorResponse 
 import { CronHistory } from '@rocket.chat/models';
 import { API } from '../api';
 import { validateBadRequestErrorResponse } from '@rocket.chat/rest-typings/src/v1/Ajv';
+import { MongoInternals } from 'meteor/mongo';
+import { ObjectId } from 'mongodb';
+
 
 API.v1.get(
 	'jobs',
@@ -26,65 +29,80 @@ API.v1.get(
 			403: validateForbiddenErrorResponse,
 		},
 	},
-	async function action() {
-		const { status, count = '25', offset = '0' } = this.queryParams;
+async function action() {
+    const { status, count = '25', offset = '0' } = this.queryParams;
 
-		const limit = parseInt(count as string, 10);
-		const skip = parseInt(offset as string, 10);
+    const limit = parseInt(count as string, 10);
+    const skip = parseInt(offset as string, 10);
 
-		const query: Record<string, any> = {};
+    const query: Record<string, any> = {};
+    if (status === 'failed') {
+        query.failReason = { $exists: true };
+    } else if (status === 'disabled') {
+        query.disabled = true;
+    }
 
-		if (status === 'failed') {
-			query.failReason = { $exists: true };
-		} else if (status === 'disabled') {
-			query.disabled = true;
-		}
+    const db = (MongoInternals.defaultRemoteCollectionDriver().mongo as any).client.db();
+    const appsSchedulerCollection = db.collection('rocketchat_apps_scheduler');
 
-		const [rawJobs, total] = await Promise.all([
-			cronJobs.getJobs(query, { nextRunAt: 1 }, limit, skip),
-			cronJobs.countJobs(query),
-		]);
+    const [rawCoreJobs, coreTotal, rawAppsJobs] = await Promise.all([
+        cronJobs.getJobs(query, { nextRunAt: 1 }, limit, skip),
+        cronJobs.countJobs(query),
+        appsSchedulerCollection.find(query).toArray(),
+    ]);
 
-		const STUCK_THRESHOLD_MS = 10 * 60 * 1000;
-		const now = new Date();
+    const STUCK_THRESHOLD_MS = 10 * 60 * 1000;
+    const now = new Date();
 
-		const jobs = rawJobs.map((job) => {
-			const attrs = job.attrs;
+    const deriveStatus = (attrs: any): string => {
+        if (attrs.disabled) return 'disabled';
+        if (attrs.lockedAt && !attrs.lastFinishedAt) return 'running';
+        if (attrs.lockedAt && now.getTime() - new Date(attrs.lockedAt).getTime() > STUCK_THRESHOLD_MS) return 'stuck';
+        if (attrs.failReason) return 'failed';
+        if (attrs.nextRunAt && new Date(attrs.nextRunAt) > now) return 'scheduled';
+        return 'completed';
+    };
 
-			let jobStatus: string;
-			if (attrs.disabled) {
-				jobStatus = 'disabled';
-			} else if (attrs.lockedAt && !attrs.lastFinishedAt) {
-				jobStatus = 'running';
-			} else if (attrs.lockedAt && now.getTime() - new Date(attrs.lockedAt).getTime() > STUCK_THRESHOLD_MS) {
-				jobStatus = 'stuck';
-			} else if (attrs.failReason) {
-				jobStatus = 'failed';
-			} else if (attrs.nextRunAt && new Date(attrs.nextRunAt) > now) {
-				jobStatus = 'scheduled';
-			} else {
-				jobStatus = 'completed';
-			}
+    const coreJobs = rawCoreJobs.map((job) => {
+        const attrs = job.attrs;
+        return {
+            _id: String(attrs._id),
+            name: attrs.name,
+            status: deriveStatus(attrs),
+            repeatInterval: attrs.repeatInterval ?? null,
+            repeatTimezone: attrs.repeatTimezone ?? null,
+            nextRunAt: attrs.nextRunAt ?? null,
+            lastRunAt: attrs.lastRunAt ?? null,
+            lastFinishedAt: attrs.lastFinishedAt ?? null,
+            lockedAt: attrs.lockedAt ?? null,
+            failCount: attrs.failCount ?? 0,
+            failReason: attrs.failReason ?? null,
+            disabled: attrs.disabled ?? false,
+            source: 'core',
+        };
+    });
 
-			return {
-				_id: String(attrs._id),
-				name: attrs.name,
-				status: jobStatus,
-				repeatInterval: attrs.repeatInterval ?? null,
-				repeatTimezone: attrs.repeatTimezone ?? null,
-				nextRunAt: attrs.nextRunAt ?? null,
-				lastRunAt: attrs.lastRunAt ?? null,
-				lastFinishedAt: attrs.lastFinishedAt ?? null,
-				lockedAt: attrs.lockedAt ?? null,
-				failCount: attrs.failCount ?? 0,
-				failReason: attrs.failReason ?? null,
-				disabled: attrs.disabled ?? false,
-				source: 'core',
-			};
-		});
+    const appsJobs = rawAppsJobs.map((doc: any) => ({
+        _id: String(doc._id),
+        name: doc.name,
+        status: deriveStatus(doc),
+        repeatInterval: doc.repeatInterval ?? null,
+        repeatTimezone: doc.repeatTimezone ?? null,
+        nextRunAt: doc.nextRunAt ?? null,
+        lastRunAt: doc.lastRunAt ?? null,
+        lastFinishedAt: doc.lastFinishedAt ?? null,
+        lockedAt: doc.lockedAt ?? null,
+        failCount: doc.failCount ?? 0,
+        failReason: doc.failReason ?? null,
+        disabled: doc.disabled ?? false,
+        appId: doc.data?.appId ?? null,
+        source: 'apps-engine',
+    }));
 
-		return API.v1.success({ jobs, count: jobs.length, offset: skip, total });
-	},
+    const jobs = [...coreJobs, ...appsJobs];
+
+    return API.v1.success({ jobs, count: jobs.length, offset: skip, total: coreTotal + rawAppsJobs.length });
+},
 );
 API.v1.post(
     'jobs/:jobId/disable',
@@ -106,13 +124,24 @@ API.v1.post(
 		},
     },
     async function action() {
-        const { jobId } = this.urlParams;
-        const found = await cronJobs.disableJob(jobId);
-        if (!found) {
-            return API.v1.failure('Job not found') as any;
-        }
+    const { jobId } = this.urlParams;
+    const { source } = this.bodyParams;
+
+    if (source === 'apps-engine') {
+        const db = (MongoInternals.defaultRemoteCollectionDriver().mongo as any).client.db();
+        const result = await db.collection('rocketchat_apps_scheduler').findOneAndUpdate(
+            { _id: new ObjectId(jobId) },
+            { $set: { disabled: true } },
+            { returnDocument: 'after' },
+        );
+        if (!result) return API.v1.failure('Job not found');
         return API.v1.success();
-    },
+    }
+
+    const found = await cronJobs.disableJob(jobId);
+    if (!found) return API.v1.failure('Job not found');
+    return API.v1.success();
+},
 );
 API.v1.post(
     'jobs/:jobId/enable',
@@ -133,15 +162,26 @@ API.v1.post(
 			403: validateForbiddenErrorResponse,
 		},
     },
-    async function action() {
-        const { jobId } = this.urlParams;
-        const found = await cronJobs.enableJob(jobId) as any;
-        if (!found) {
-            return API.v1.failure('Job not found');
-        }
+   async function action() {
+    const { jobId } = this.urlParams;
+    const { source } = this.bodyParams as { source?: string };
+
+    if (source === 'apps-engine') {
+        const db = (MongoInternals.defaultRemoteCollectionDriver().mongo as any).client.db();
+        const result = await db.collection('rocketchat_apps_scheduler').findOneAndUpdate(
+            { _id: new ObjectId(jobId) },
+            { $set: { disabled: false } },
+            { returnDocument: 'after' },
+        );
+        if (!result) return API.v1.failure('Job not found') as any;
         return API.v1.success();
-    },
-);
+    }
+
+    const found = await cronJobs.enableJob(jobId);
+    if (!found) return API.v1.failure('Job not found') as any;
+    return API.v1.success();
+	},
+	);
 API.v1.post(
     'jobs/:jobId/force-run',
     {
@@ -162,14 +202,25 @@ API.v1.post(
 		},
     },
     async function action() {
-        const { jobId } = this.urlParams;
-        const found = await cronJobs.forceRunJob(jobId) as any;
-        if (!found) {
-            return API.v1.failure('Job not found');
-        }
+    const { jobId } = this.urlParams;
+    const { source } = this.bodyParams as { source?: string };
+
+    if (source === 'apps-engine') {
+        const db = (MongoInternals.defaultRemoteCollectionDriver().mongo as any).client.db();
+        const result = await db.collection('rocketchat_apps_scheduler').findOneAndUpdate(
+            { _id: new ObjectId(jobId) },
+            { $set: { nextRunAt: new Date() } },
+            { returnDocument: 'after' },
+        );
+        if (!result) return API.v1.failure('Job not found') as any;
         return API.v1.success();
-    },
-);
+    }
+
+    const found = await cronJobs.forceRunJob(jobId);
+    if (!found) return API.v1.failure('Job not found') as any;
+    return API.v1.success();
+	},
+	);
 API.v1.get(
     'jobs/:jobName/history',
     {
