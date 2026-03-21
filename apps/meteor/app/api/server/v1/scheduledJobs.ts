@@ -1,6 +1,6 @@
 import { cronJobs } from '@rocket.chat/cron';
 import { ajv, validateUnauthorizedErrorResponse, validateForbiddenErrorResponse } from '@rocket.chat/rest-typings';
-
+import { CronHistory } from '@rocket.chat/models';
 import { API } from '../api';
 import { validateBadRequestErrorResponse } from '@rocket.chat/rest-typings/src/v1/Ajv';
 
@@ -168,5 +168,42 @@ API.v1.post(
             return API.v1.failure('Job not found');
         }
         return API.v1.success();
+    },
+);
+API.v1.get(
+    'jobs/:jobName/history',
+    {
+        authRequired: true,
+        permissionsRequired: ['view-privileged-setting'],
+        response: {
+            200: ajv.compile({
+                type: 'object',
+                properties: {
+                    history: { type: 'array', items: { type: 'object' } },
+                    count: { type: 'number' },
+                    offset: { type: 'number' },
+                    total: { type: 'number' },
+                    success: { type: 'boolean', enum: [true] },
+                },
+                required: ['history', 'count', 'offset', 'total', 'success'],
+                additionalProperties: false,
+            }),
+            401: validateUnauthorizedErrorResponse,
+            403: validateForbiddenErrorResponse,
+        },
+    },
+    async function action() {
+        const { jobName } = this.urlParams;
+        const { count = '25', offset = '0' } = this.queryParams;
+
+        const limit = parseInt(count as string, 10);
+        const skip = parseInt(offset as string, 10);
+
+        const [history, total] = await Promise.all([
+            CronHistory.find({ name: jobName }, { sort: { startedAt: -1 }, limit, skip }).toArray(),
+            CronHistory.countDocuments({ name: jobName }),
+        ]);
+
+        return API.v1.success({ history, count: history.length, offset: skip, total });
     },
 );
