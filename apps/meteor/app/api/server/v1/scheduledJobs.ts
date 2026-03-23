@@ -30,85 +30,207 @@ API.v1.get(
 		},
 	},
 async function action() {
-    const { status, count = '25', offset = '0' } = this.queryParams;
+	const VALID_STATUSES = ['scheduled', 'running', 'failed', 'completed', 'disabled', 'stuck'] as const;
+	type JobStatus = (typeof VALID_STATUSES)[number];
 
-    const limit = parseInt(count as string, 10);
-    const skip = parseInt(offset as string, 10);
+	const VALID_SORT_FIELDS = ['name', 'nextRunAt', 'lastRunAt', 'lastFinishedAt', 'failCount', 'status'] as const;
+	type SortField = (typeof VALID_SORT_FIELDS)[number];
 
-    const query: Record<string, any> = {};
-    if (status === 'failed') {
-        query.failReason = { $exists: true };
-    } else if (status === 'disabled') {
-        query.disabled = true;
-    }
+	const {
+		status: rawStatus,
+		count = '25',
+		offset = '0',
+		search,
+		sortField: rawSortField = 'nextRunAt',
+		sortOrder: sortOrderRaw,
+		source,
+	} = this.queryParams;
 
-    const db = (MongoInternals.defaultRemoteCollectionDriver().mongo as any).client.db();
-    const appsSchedulerCollection = db.collection('rocketchat_apps_scheduler');
+	const safeStatus: JobStatus | undefined = VALID_STATUSES.includes(rawStatus as JobStatus)
+		? (rawStatus as JobStatus)
+		: undefined;
 
-    const [rawCoreJobs, coreTotal, rawAppsJobs] = await Promise.all([
-        cronJobs.getJobs(query, { nextRunAt: 1 }, limit, skip),
-        cronJobs.countJobs(query),
-        appsSchedulerCollection.find(query).toArray(),
-    ]);
+	const safeSortField: SortField = VALID_SORT_FIELDS.includes(rawSortField as SortField)
+		? (rawSortField as SortField)
+		: 'nextRunAt';
 
-    const STUCK_THRESHOLD_MS = 10 * 60 * 1000;
-    const now = new Date();
+	const sortOrder: 'asc' | 'desc' = (sortOrderRaw as string) === 'desc' ? 'desc' : 'asc';
 
-    const deriveStatus = (attrs: any): string => {
-        if (attrs.disabled) return 'disabled';
-        if (attrs.lockedAt && !attrs.lastFinishedAt) return 'running';
-        if (attrs.lockedAt && now.getTime() - new Date(attrs.lockedAt).getTime() > STUCK_THRESHOLD_MS) return 'stuck';
-        if (attrs.failReason) return 'failed';
-        if (attrs.nextRunAt && new Date(attrs.nextRunAt) > now) return 'scheduled';
-        return 'completed';
-    };
+	const limit = Math.min(Math.max(parseInt(count as string, 10) || 25, 1), 100);
+	const skip = Math.max(parseInt(offset as string, 10) || 0, 0);
 
-    const coreJobs = rawCoreJobs.map((job) => {
-        const attrs = job.attrs;
-        return {
-            _id: String(attrs._id),
-            name: attrs.name,
-            status: deriveStatus(attrs),
-            repeatInterval: attrs.repeatInterval ?? null,
-            repeatTimezone: attrs.repeatTimezone ?? null,
-            nextRunAt: attrs.nextRunAt ?? null,
-            lastRunAt: attrs.lastRunAt ?? null,
-            lastFinishedAt: attrs.lastFinishedAt ?? null,
-            lockedAt: attrs.lockedAt ?? null,
-            failCount: attrs.failCount ?? 0,
-            failReason: attrs.failReason ?? null,
-            disabled: attrs.disabled ?? false,
-            source: 'core',
-        };
-    });
+	const STUCK_THRESHOLD_MS = 10 * 60 * 1000;
+	const now = new Date();
 
-    const appsJobs = rawAppsJobs.map((doc: any) => ({
-        _id: String(doc._id),
-        name: doc.name,
-        status: deriveStatus(doc),
-        repeatInterval: doc.repeatInterval ?? null,
-        repeatTimezone: doc.repeatTimezone ?? null,
-        nextRunAt: doc.nextRunAt ?? null,
-        lastRunAt: doc.lastRunAt ?? null,
-        lastFinishedAt: doc.lastFinishedAt ?? null,
-        lockedAt: doc.lockedAt ?? null,
-        failCount: doc.failCount ?? 0,
-        failReason: doc.failReason ?? null,
-        disabled: doc.disabled ?? false,
-        appId: doc.data?.appId ?? null,
-        source: 'apps-engine',
-    }));
+	const baseMatch: Record<string, any> = {};
 
-    const jobs = [...coreJobs, ...appsJobs];
+	if (safeStatus === 'failed') baseMatch.failReason = { $exists: true, $ne: null };
+	if (safeStatus === 'disabled') baseMatch.disabled = true;
+	if (search) baseMatch.name = { $regex: search, $options: 'i' };
 
-    return API.v1.success({ jobs, count: jobs.length, offset: skip, total: coreTotal + rawAppsJobs.length });
-},
+	const db = (MongoInternals.defaultRemoteCollectionDriver().mongo as any).client.db();
+	const coreCollection = db.collection('rocketchat_cron'); // adjust if name differs
+
+	// ── $addFields stage: compute a 'status' field in the aggregation pipeline ──
+	const addStatusStage = {
+		$addFields: {
+			status: {
+				$switch: {
+					branches: [
+						
+						{ case: { $eq: ['$disabled', true] }, then: 'disabled' },
+						
+						{
+							case: {
+								$and: [
+									{ $ifNull: ['$lockedAt', false] },
+									{
+										$gt: [
+											{ $subtract: [now, '$lockedAt'] },
+											STUCK_THRESHOLD_MS,
+										],
+									},
+									{ $ifNull: ['$lastRunAt', false] },
+									{
+										$or: [
+											{ $not: [{ $ifNull: ['$lastFinishedAt', false] }] },
+											{ $gt: ['$lastRunAt', '$lastFinishedAt'] },
+										],
+									},
+								],
+							},
+							then: 'stuck',
+						},
+						
+						{
+							case: {
+								$and: [
+									{ $ifNull: ['$lockedAt', false] },
+									{ $ifNull: ['$lastRunAt', false] },
+									{
+										$or: [
+											{ $not: [{ $ifNull: ['$lastFinishedAt', false] }] },
+											{ $gt: ['$lastRunAt', '$lastFinishedAt'] },
+										],
+									},
+								],
+							},
+							then: 'running',
+						},
+				
+						{
+							case: {
+								$or: [
+									{ $ifNull: ['$failedAt', false] },
+									{ $and: [{ $ifNull: ['$failReason', false] }, { $ne: ['$failReason', null] }] },
+								],
+							},
+							then: 'failed',
+						},
+						
+						{
+							case: {
+								$and: [
+									{ $ifNull: ['$nextRunAt', false] },
+									{ $gt: ['$nextRunAt', now] },
+								],
+							},
+							then: 'scheduled',
+						},
+					],
+					default: 'completed',
+				},
+			},
+			
+			appId: { $ifNull: ['$data.appId', null] },
+		},
+	};
+
+	const addCoreSourceStage = { $addFields: { source: 'core' } };
+	const addAppsSourceStage = { $addFields: { source: 'apps-engine' } };
+
+	const fetchCore = source !== 'apps-engine';
+	const fetchApps = source !== 'core';
+
+	const appsSubPipeline = [
+		{ $match: baseMatch },
+		addAppsSourceStage,
+		addStatusStage,
+	];
+
+	const pipeline: object[] = [];
+
+	if (fetchCore) {
+		pipeline.push({ $match: baseMatch });
+		pipeline.push(addCoreSourceStage);
+		pipeline.push(addStatusStage);
+	} else {
+
+		pipeline.push({ $match: { _id: { $exists: false } } });
+	}
+
+	if (fetchApps) {
+		pipeline.push({
+			$unionWith: {
+				coll: 'rocketchat_apps_scheduler',
+				pipeline: appsSubPipeline,
+			},
+		});
+	}
+
+	if (safeStatus && !['failed', 'disabled'].includes(safeStatus)) {
+		pipeline.push({ $match: { status: safeStatus } });
+	}
+
+	const sortDir = sortOrder === 'desc' ? -1 : 1;
+
+	pipeline.push({
+		$facet: {
+			data: [
+				{ $sort: { [safeSortField]: sortDir, _id: 1 } },
+				{ $skip: skip },
+				{ $limit: limit },
+				{
+					$project: {
+						_id: { $toString: '$_id' },
+						name: 1,
+						status: 1,
+						repeatInterval: { $ifNull: ['$repeatInterval', null] },
+						repeatTimezone: { $ifNull: ['$repeatTimezone', null] },
+						nextRunAt: { $ifNull: ['$nextRunAt', null] },
+						lastRunAt: { $ifNull: ['$lastRunAt', null] },
+						lastFinishedAt: { $ifNull: ['$lastFinishedAt', null] },
+						lockedAt: { $ifNull: ['$lockedAt', null] },
+						failCount: { $ifNull: ['$failCount', 0] },
+						failReason: { $ifNull: ['$failReason', null] },
+						disabled: { $ifNull: ['$disabled', false] },
+						appId: 1,
+						source: 1,
+					},
+				},
+			],
+			total: [{ $count: 'count' }],
+		},
+	});
+
+	const [result] = await coreCollection.aggregate(pipeline).toArray();
+
+	const paginated = result?.data ?? [];
+	const total = result?.total?.[0]?.count ?? 0;
+
+	return API.v1.success({
+		jobs: paginated,
+		count: paginated.length,
+		offset: skip,
+		total,
+	});
+}
 );
 API.v1.post(
     'jobs/:jobId/disable',
     {
         authRequired: true,
-        permissionsRequired: ['view-privileged-setting'],
+        permissionsRequired: ['edit-privileged-setting'],
        response: {
 			200: ajv.compile({
 				type: 'object',
@@ -147,7 +269,7 @@ API.v1.post(
     'jobs/:jobId/enable',
     {
         authRequired: true,
-        permissionsRequired: ['view-privileged-setting'],
+        permissionsRequired: ['edit-privileged-setting'],
         response: {
 			200: ajv.compile({
 				type: 'object',
@@ -186,7 +308,7 @@ API.v1.post(
     'jobs/:jobId/force-run',
     {
         authRequired: true,
-        permissionsRequired: ['view-privileged-setting'],
+        permissionsRequired: ['edit-privileged-setting'],
         response: {
 			200: ajv.compile({
 				type: 'object',

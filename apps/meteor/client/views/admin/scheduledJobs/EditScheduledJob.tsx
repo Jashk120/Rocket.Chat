@@ -9,6 +9,11 @@ import {
 } from '@rocket.chat/fuselage';
 import { ContextualbarScrollableContent, ContextualbarFooter } from '@rocket.chat/ui-client';
 import { useTranslation } from 'react-i18next';
+import { useEndpoint, useToastMessageDispatch } from '@rocket.chat/ui-contexts';
+import { useQuery } from '@tanstack/react-query';
+import { useEffectEvent } from '@rocket.chat/fuselage-hooks';
+import { useQueryClient } from '@tanstack/react-query';
+
 
 type ScheduledJob = {
 	_id: string;
@@ -106,11 +111,55 @@ const ReadOnlyField = ({ label, hint, children }: { label: string; hint?: string
 	</Field>
 );
 
-const EditScheduledJob = ({ job, onClose }: EditScheduledJobProps) => {
-	const { t } = useTranslation();
+const EditScheduledJob = ({ job, onClose, onReload }: EditScheduledJobProps & { onReload: () => void }) => {
+    const { t } = useTranslation();
+    const dispatchToastMessage = useToastMessageDispatch();
 
-	const human = job.repeatInterval ? parseCron(job.repeatInterval) : null;
-	const history = DUMMY_HISTORY[job.name] ?? null;
+    const disableJob = useEndpoint('POST', '/v1/jobs/:jobId/disable' as any, { jobId: job._id } as any) as any;
+    const enableJob = useEndpoint('POST', '/v1/jobs/:jobId/enable' as any, { jobId: job._id } as any) as any;
+    const forceRun = useEndpoint('POST', '/v1/jobs/:jobId/force-run' as any, { jobId: job._id } as any) as any;
+    const getHistory = useEndpoint('GET', '/v1/jobs/:jobName/history' as any, { jobName: job.name } as any) as any;
+	const queryClient = useQueryClient();
+
+    const { data: historyData } = useQuery({
+        queryKey: ['job-history', job.name],
+        queryFn: () => getHistory({ jobName: job.name }),
+        meta: { apiErrorToastMessage: true },
+    });
+
+    const handleDisable = useEffectEvent(async () => {
+        try {
+            await disableJob({ source: job.source });
+            dispatchToastMessage({ type: 'success', message: t('Job disabled') });
+            onReload();
+        } catch (error) {
+            dispatchToastMessage({ type: 'error', message: error });
+        }
+    });
+
+    const handleEnable = useEffectEvent(async () => {
+        try {
+            await enableJob({ source: job.source });
+            dispatchToastMessage({ type: 'success', message: t('Job enabled') });
+            onReload();
+        } catch (error) {
+            dispatchToastMessage({ type: 'error', message: error });
+        }
+    });
+
+    const handleForceRun = useEffectEvent(async () => {
+        try {
+            await forceRun({ source: job.source });
+            dispatchToastMessage({ type: 'success', message: t('Job triggered') });
+			queryClient.invalidateQueries({ queryKey: ['job-history', job.name] });
+			onReload();
+        } catch (error) {
+            dispatchToastMessage({ type: 'error', message: error });
+        }
+    });
+
+    const history = historyData?.history ?? null;
+    const human = job.repeatInterval ? parseCron(job.repeatInterval) : null;
 
 	return (
 		<>
@@ -231,9 +280,9 @@ const EditScheduledJob = ({ job, onClose }: EditScheduledJobProps) => {
 				<Field>
 					<FieldLabel>{t('Recent executions')}</FieldLabel>
 				</Field>
-				{history ? (
+				{history && history.length > 0 ? (
 					<Box display='flex' flexDirection='column' style={{ gap: '6px', marginTop: '4px' }}>
-						{history.map((entry, i) => (
+						{history.map((entry: any, i: number) => (
 							<Box
 								key={i}
 								style={{
@@ -246,28 +295,19 @@ const EditScheduledJob = ({ job, onClose }: EditScheduledJobProps) => {
 									border: '1px solid rgba(255,255,255,0.06)',
 								}}
 							>
-								<Box
-									fontScale='p2'
-									style={{
-										fontSize: '11px',
-										color: '#94a3b8',
-										fontVariantNumeric: 'tabular-nums',
-									}}
-								>
+								<Box fontScale='p2' style={{ fontSize: '11px', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>
 									{new Date(entry.startedAt).toLocaleTimeString()}
 								</Box>
-								<span
-									style={{
-										padding: '1px 6px',
-										borderRadius: '4px',
-										fontSize: '10px',
-										fontWeight: 600,
-										background: entry.result === 'success' ? 'rgba(34,197,94,0.10)' : 'rgba(239,68,68,0.10)',
-										border: `1px solid ${entry.result === 'success' ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}`,
-										color: entry.result === 'success' ? '#22c55e' : '#ef4444',
-									}}
-								>
-									{entry.result}
+								<span style={{
+									padding: '1px 6px',
+									borderRadius: '4px',
+									fontSize: '10px',
+									fontWeight: 600,
+									background: entry.error ? 'rgba(239,68,68,0.10)' : 'rgba(34,197,94,0.10)',
+									border: `1px solid ${entry.error ? 'rgba(239,68,68,0.25)' : 'rgba(34,197,94,0.25)'}`,
+									color: entry.error ? '#ef4444' : '#22c55e',
+								}}>
+									{entry.error ? 'failed' : 'success'}
 								</span>
 							</Box>
 						))}
@@ -281,10 +321,16 @@ const EditScheduledJob = ({ job, onClose }: EditScheduledJobProps) => {
 
 			<ContextualbarFooter>
 				<ButtonGroup stretch>
-					<Button danger disabled={job.disabled}>
-						{t('Disable')}
-					</Button>
-					<Button primary disabled={!!job.disabled}>
+					{job.disabled ? (
+						<Button primary onClick={handleEnable}>
+							{t('Enable')}
+						</Button>
+					) : (
+						<Button danger onClick={handleDisable}>
+							{t('Disable')}
+						</Button>
+					)}
+					<Button onClick={handleForceRun}>
 						{t('Force Run')}
 					</Button>
 				</ButtonGroup>

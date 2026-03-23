@@ -10,28 +10,13 @@ type ScheduledJob = {
 	_id: string;
 	name: string;
 	status: string;
+	source: 'core' | 'apps-engine';
 	repeatInterval: string | null;
 	nextRunAt: string | null;
 	lastRunAt: string | null;
 	failCount: number;
 };
 
-type StatusConfig = {
-	color: string;
-	bg: string;
-	border: string;
-};
-
-const statusConfig: Record<string, StatusConfig> = {
-	scheduled: { color: 'blue', bg: 'tint', border: 'light' },
-	running:   { color: 'green', bg: 'tint', border: 'light' },
-	failed:    { color: 'red', bg: 'tint', border: 'light' },
-	stuck:     { color: 'yellow', bg: 'tint', border: 'light' },
-	disabled:  { color: 'default', bg: 'tint', border: 'light' },
-	completed: { color: 'purple', bg: 'tint', border: 'light' },
-};
-
-// Dot color per status using inline style — Fuselage tokens don't cover all these
 const dotColor: Record<string, string> = {
 	scheduled: '#4a9eff',
 	running:   '#22c55e',
@@ -68,9 +53,6 @@ const badgeText: Record<string, string> = {
 	completed: '#a78bfa',
 };
 
-/**
- * Converts a 5-part cron expression to a short human label.
- */
 function parseCron(cron: string): string | null {
 	const parts = cron.trim().split(/\s+/);
 	if (parts.length !== 5) return null;
@@ -98,8 +80,6 @@ function parseCron(cron: string): string | null {
 
 const StatusBadge = ({ status }: { status: string }) => (
 	<Box
-		display='flex'
-		alignItems='center'
 		style={{
 			display: 'inline-flex',
 			alignItems: 'center',
@@ -125,6 +105,26 @@ const StatusBadge = ({ status }: { status: string }) => (
 			}}
 		/>
 		{status}
+	</Box>
+);
+
+const SourceBadge = ({ source }: { source: 'core' | 'apps-engine' }) => (
+	<Box
+		style={{
+			display: 'inline-flex',
+			alignItems: 'center',
+			padding: '2px 8px',
+			borderRadius: '6px',
+			background: source === 'core' ? 'rgba(99,102,241,0.10)' : 'rgba(20,184,166,0.10)',
+			border: `1px solid ${source === 'core' ? 'rgba(99,102,241,0.25)' : 'rgba(20,184,166,0.25)'}`,
+			color: source === 'core' ? '#818cf8' : '#2dd4bf',
+			fontSize: '11px',
+			fontFamily: 'monospace',
+			fontWeight: 500,
+			whiteSpace: 'nowrap',
+		}}
+	>
+		{source === 'core' ? 'core' : 'apps-engine'}
 	</Box>
 );
 
@@ -162,45 +162,17 @@ const IntervalChip = ({ value }: { value: string | null }) => {
 			>
 				{human ?? value}
 			</span>
-			{human && (
-				<span
-					style={{
-						display: 'inline-flex',
-						alignItems: 'center',
-						height: '16px',
-						padding: '0 4px',
-						borderRadius: '4px',
-						background: 'rgba(255,255,255,0.04)',
-						border: '1px solid rgba(255,255,255,0.08)',
-						fontSize: '9px',
-						fontFamily: 'monospace',
-						fontWeight: 600,
-						color: '#475569',
-						lineHeight: 1,
-						flexShrink: 0,
-					}}
-				>
-					cron
-				</span>
-			)}
+		
 		</span>
 	);
 };
 
 const DateCell = ({ value, formatter }: { value: string | null; formatter: (d: string) => string }) => {
 	if (!value) {
-		return (
-			<Box color='hint' fontScale='p2'>
-				—
-			</Box>
-		);
+		return <Box color='hint' fontScale='p2'>—</Box>;
 	}
 	return (
-		<Box
-			fontScale='p2'
-			color='secondary-info'
-			style={{ fontSize: '12px', fontVariantNumeric: 'tabular-nums' }}
-		>
+		<Box fontScale='p2' color='secondary-info' style={{ fontSize: '12px', fontVariantNumeric: 'tabular-nums' }}>
 			{formatter(value)}
 		</Box>
 	);
@@ -208,11 +180,7 @@ const DateCell = ({ value, formatter }: { value: string | null; formatter: (d: s
 
 const FailCount = ({ count }: { count: number }) => {
 	if (count === 0) {
-		return (
-			<Box color='hint' fontScale='p2'>
-				—
-			</Box>
-		);
+		return <Box color='hint' fontScale='p2'>—</Box>;
 	}
 	return (
 		<Box
@@ -242,17 +210,20 @@ const ScheduledJobRow = ({ job }: { job: ScheduledJob }) => {
 	const router = useRouter();
 	const formatDate = useFormatDate();
 
-  const onClick = useCallback(
-    (id: string) => (): void =>
-        router.navigate(`/admin/scheduled-jobs/edit/${id}` as any),
-    [router],
-    );
+	const onClick = useCallback(
+		(id: string) => (): void =>
+			router.navigate(`/admin/scheduled-jobs/edit/${id}` as any),
+		[router],
+	);
+
 	return (
 		<GenericTableRow
 			action
 			key={job._id}
 			onClick={onClick(job._id)}
-			onKeyDown={onClick(job._id)}
+			onKeyDown={(e) => {
+				if (e.key === 'Enter' || e.key === ' ') onClick(job._id)();
+			}}
 			tabIndex={0}
 			role='link'
 		>
@@ -273,6 +244,10 @@ const ScheduledJobRow = ({ job }: { job: ScheduledJob }) => {
 
 			<GenericTableCell>
 				<StatusBadge status={job.status} />
+			</GenericTableCell>
+
+			<GenericTableCell>
+				<SourceBadge source={job.source} />
 			</GenericTableCell>
 
 			<GenericTableCell>

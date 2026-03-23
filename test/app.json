@@ -1,0 +1,15 @@
+{
+    "id": "1dbd14bd-2fb6-4219-b0dc-26ffddb23da6",
+    "version": "0.0.1",
+    "requiredApiVersion": "^1.60.0",
+    "iconFile": "icon.png",
+    "author": {
+        "name": "Jayesh",
+        "homepage": "https://github.com/Jashk120",
+        "support": "https://github.com/Jashk120"
+    },
+    "name": "Test",
+    "nameSlug": "test",
+    "classFile": "TestApp.ts",
+    "description": "For Testing Schedular"
+}

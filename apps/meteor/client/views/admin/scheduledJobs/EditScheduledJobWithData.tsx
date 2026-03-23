@@ -8,9 +8,10 @@ import EditScheduledJob from './EditScheduledJob';
 type EditScheduledJobWithDataProps = {
 	id?: string;
 	onClose: () => void;
+	onReload: () => void;
 };
 
-const EditScheduledJobWithData = ({ id, onClose }: EditScheduledJobWithDataProps) => {
+const EditScheduledJobWithData = ({ id, onClose, onReload}: EditScheduledJobWithDataProps) => {
 	const { t } = useTranslation();
 
 	const getJobs = useEndpoint('GET', '/v1/jobs' as any, {} as any) as any;
@@ -34,7 +35,7 @@ const EditScheduledJobWithData = ({ id, onClose }: EditScheduledJobWithDataProps
 		);
 	}
 
-	const job = data?.jobs?.[0];
+	const job = data?.jobs?.find((j: any) => j._id === id);
 
 	if (!job) {
 		return null;
@@ -46,7 +47,7 @@ const EditScheduledJobWithData = ({ id, onClose }: EditScheduledJobWithDataProps
 				<ContextualbarTitle>{job.name}</ContextualbarTitle>
 				<ContextualbarClose onClick={onClose} />
 			</ContextualbarHeader>
-			<EditScheduledJob job={job} onClose={onClose} />
+			<EditScheduledJob job={job} onClose={onClose} onReload={onReload} />
 		</>
 	);
 };

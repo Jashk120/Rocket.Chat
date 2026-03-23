@@ -475,13 +475,26 @@ export class Agenda extends EventEmitter {
 	}
 
 	private async _updateJob(job: Job, props: Record<string, any>): Promise<void> {
-		const id = job.attrs._id;
-		const update = {
-			$set: props,
-		};
+    const id = job.attrs._id;
 
-		// Update the job and process the resulting data'
-		debug('job already has _id, calling findOneAndUpdate() using _id as query');
+		const $set: Record<string, any> = {};
+		const $unset: Record<string, any> = {};
+		const unsetOnUndefined = new Set(['failReason', 'failedAt']);
+
+		for (const [key, value] of Object.entries(props)) {
+			if (value === undefined && unsetOnUndefined.has(key)) {
+				$unset[key] = '';
+			} else if (value !== undefined) {
+				$set[key] = value;
+			}
+		}
+
+    const update: Record<string, any> = {};
+    if (Object.keys($set).length > 0) update.$set = $set;
+    if (Object.keys($unset).length > 0) update.$unset = $unset;
+
+    // Update the job and process the resulting data
+    debug('job already has _id, calling findOneAndUpdate() using _id as query');
 		try {
 			const result = await this.getCollection().findOneAndUpdate({ _id: id } as any, update, { returnDocument: 'after' });
 			result && (await this._processDbResult(job, result));
