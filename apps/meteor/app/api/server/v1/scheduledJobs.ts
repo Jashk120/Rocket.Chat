@@ -61,7 +61,18 @@ async function action() {
 
 	const STUCK_THRESHOLD_MS = 10 * 60 * 1000;
 	const now = new Date();
-
+	// Filter strategy for 'failed' and 'disabled' statuses:
+	// These are applied via baseMatch BEFORE $unionWith so both collections
+	// are filtered at the source — inside appsSubPipeline for Apps Engine,
+	// and in the core pipeline's $match for core jobs.
+	//
+	// Performance rationale: failed and disabled jobs are a small subset of
+	// total jobs. Pre-filtering at the source means MongoDB never processes
+	// the majority of documents through the expensive addStatusStage $switch.
+	//
+	// 'stuck', 'running', 'scheduled', 'completed' cannot be pre-filtered
+	// because they depend on the derived 'status' field computed by addStatusStage.
+	// Those are filtered via a $match stage AFTER $unionWith merges both collections.
 	const baseMatch: Record<string, any> = {};
 
 	if (safeStatus === 'failed') baseMatch.failReason = { $exists: true, $ne: null };
@@ -153,15 +164,18 @@ async function action() {
 	const fetchApps = source !== 'core';
 
 	const appsSubPipeline = [
+		{ $addFields: { schedule: { $ifNull: ['$repeatInterval', '$value'] } } },
 		{ $match: baseMatch },
 		addAppsSourceStage,
 		addStatusStage,
 	];
 
 	const pipeline: object[] = [];
-
+	
 	if (fetchCore) {
+		
 		pipeline.push({ $match: baseMatch });
+		pipeline.push({ $addFields: { schedule: { $ifNull: ['$repeatInterval', '$value'] } } })
 		pipeline.push(addCoreSourceStage);
 		pipeline.push(addStatusStage);
 	} else {
@@ -170,6 +184,7 @@ async function action() {
 	}
 
 	if (fetchApps) {
+		
 		pipeline.push({
 			$unionWith: {
 				coll: 'rocketchat_apps_scheduler',
@@ -195,7 +210,7 @@ async function action() {
 						_id: { $toString: '$_id' },
 						name: 1,
 						status: 1,
-						repeatInterval: { $ifNull: ['$repeatInterval', null] },
+						schedule: { $ifNull: ['$schedule', null] },
 						repeatTimezone: { $ifNull: ['$repeatTimezone', null] },
 						nextRunAt: { $ifNull: ['$nextRunAt', null] },
 						lastRunAt: { $ifNull: ['$lastRunAt', null] },
@@ -204,6 +219,7 @@ async function action() {
 						failCount: { $ifNull: ['$failCount', 0] },
 						failReason: { $ifNull: ['$failReason', null] },
 						disabled: { $ifNull: ['$disabled', false] },
+						type: { $ifNull: ['$type', null] },
 						appId: 1,
 						source: 1,
 					},
